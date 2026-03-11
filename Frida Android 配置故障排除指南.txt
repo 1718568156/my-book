@@ -1,0 +1,297 @@
+===============================================
+    Frida Android 配置故障排除指南
+===============================================
+作者：Peter 老师
+日期：2026年3月1日
+
+错误信息：
+Failed to enumerate processes: unable to load libart.so: dlopen failed: 
+ANDROID_DLEXT_USE_NAMESPACE is set but extinfo->library_namespace is null
+
+===============================================
+一、问题原因
+===============================================
+
+这是 Android 10+ 系统的 linker namespace 限制导致的。
+当 frida-server 没有 root 权限，或 SELinux 限制时，
+无法加载系统库（libart.so），导致进程枚举失败。
+
+根本原因：
+1. Android 10+ 引入了更严格的动态链接器命名空间隔离
+2. frida-server 需要 root 权限才能绕过这些限制
+3. SELinux Enforcing 模式会阻止 frida-server 的操作
+
+
+===============================================
+二、解决方法（按推荐顺序）
+===============================================
+
+【方法 1】使用 root 权限运行 frida-server
+-----------------------------------------------
+
+步骤：
+1. 进入 adb shell 获取 root 权限
+   adb shell
+   su
+
+2. 启动 frida-server（后台运行）
+   /data/local/tmp/frida-server-16.x.x-android-arm64 &
+
+3. 在另一个终端执行 frida 命令
+   frida-ps -U
+
+验证：
+   adb shell ps -A | grep frida
+   应该能看到 frida-server 进程以 root 身份运行
+
+
+【方法 2】临时禁用 SELinux
+-----------------------------------------------
+
+步骤：
+1. 进入 root shell
+   adb shell
+   su
+
+2. 临时禁用 SELinux（重启后失效）
+   setenforce 0
+
+3. 验证 SELinux 状态
+   getenforce
+   应该显示 "Permissive"
+
+4. 重新启动 frida-server
+   /data/local/tmp/frida-server &
+
+注意：这只是临时禁用，重启手机后会恢复 Enforcing 模式。
+
+
+【方法 3】使用 --realm=emulated 参数
+-----------------------------------------------
+
+启动 frida-server 时添加参数：
+
+   adb shell
+   su
+   /data/local/tmp/frida-server --realm=emulated &
+
+这个参数让 frida 使用模拟模式，绕过一些系统限制。
+
+
+【方法 4】检查 frida 版本兼容性
+-----------------------------------------------
+
+某些 Frida 版本与特定 Android 版本有兼容性问题：
+
+查看当前版本：
+   frida --version
+   pip show frida
+
+尝试降级或升级：
+   # 降级到 15.x 版本
+   pip install frida==15.2.2
+   pip install frida-tools==11.0.0
+
+   # 或升级到最新稳定版
+   pip install --upgrade frida
+   pip install --upgrade frida-tools
+
+下载对应版本的 frida-server：
+   https://github.com/frida/frida/releases
+
+确保 frida（PC端）和 frida-server（手机端）版本一致！
+
+
+【方法 5】使用特定启动方式
+-----------------------------------------------
+
+完整启动流程：
+
+1. 推送 frida-server 到手机
+   adb push frida-server-16.x.x-android-arm64 /data/local/tmp/
+
+2. 修改权限
+   adb shell "chmod 755 /data/local/tmp/frida-server*"
+
+3. 用这种方式启动
+   adb shell "su -c '/data/local/tmp/frida-server-16.x.x-android-arm64 -D &'"
+
+或：
+   adb shell
+   su
+   /data/local/tmp/frida-server -D &
+
+-D 参数表示以守护进程模式运行。
+
+
+【方法 6】使用 Magisk 模块（长期解决方案）
+-----------------------------------------------
+
+如果手机已 root 且有 Magisk：
+
+1. 安装 MagiskHide Props Config 模块
+2. 或者安装 Frida-Server Magisk 模块
+
+搜索：Magisk Module Frida Server
+
+
+===============================================
+三、诊断命令清单
+===============================================
+
+【基本信息检查】
+
+1. 查看 Android 版本
+   adb shell getprop ro.build.version.release
+
+2. 查看 SELinux 状态
+   adb shell getenforce
+   # Enforcing = 严格模式，Permissive = 宽松模式
+
+3. 查看 frida-server 是否运行
+   adb shell ps -A | grep frida
+
+4. 查看 frida-server 运行权限
+   adb shell ps -A | grep frida
+   # 确认 USER 列是 root 还是 shell
+
+
+【网络连接检查】
+
+5. 检查端口监听
+   adb shell netstat -tlnp | grep 27042
+   # frida 默认使用 27042 端口
+
+6. 本地转发测试
+   adb forward tcp:27042 tcp:27042
+   frida-ps -R  # 使用远程模式测试
+
+
+【日志查看】
+
+7. 查看 frida-server 日志
+   adb shell "su -c 'logcat -s frida-server'"
+
+8. 查看系统 linker 日志
+   adb shell "su -c 'logcat -d | grep -i linker'"
+
+
+===============================================
+四、常见场景解决方案
+===============================================
+
+【场景 1】Android 10/11/12/13 系统
+-----------------------------------------------
+- 必须 root
+- 必须禁用 SELinux 或设置 Permissive
+- frida-server 必须以 root 权限运行
+
+【场景 2】使用模拟器（如雷电、夜神）
+-----------------------------------------------
+- 模拟器通常默认 root
+- 直接执行：adb shell "/data/local/tmp/frida-server &"
+
+【场景 3】真机 + Magisk Root
+-----------------------------------------------
+- 确保 Magisk 中关闭了 "MagiskHide" 对 frida 的限制
+- 在 Magisk 设置中启用 "Zygisk"
+- 重启后再试
+
+【场景 4】Android 14+ 系统
+-----------------------------------------------
+- 可能需要最新版 Frida (16.x+)
+- 可能需要额外的内核补丁
+- 建议使用开发版手机或模拟器
+
+
+===============================================
+五、完整配置流程（推荐）
+===============================================
+
+步骤 1：准备工作
+---------------
+# 下载 frida-server
+wget https://github.com/frida/frida/releases/download/16.x.x/frida-server-16.x.x-android-arm64.xz
+
+# 解压
+xz -d frida-server-16.x.x-android-arm64.xz
+
+# 推送到手机
+adb push frida-server-16.x.x-android-arm64 /data/local/tmp/
+
+# 修改权限
+adb shell "chmod 755 /data/local/tmp/frida-server*"
+
+
+步骤 2：获取 root 权限
+---------------------
+adb shell
+su
+# 确认提示符变为 #（表示 root）
+
+
+步骤 3：禁用 SELinux（可选但推荐）
+----------------------------------
+setenforce 0
+getenforce
+# 确认显示 Permissive
+
+
+步骤 4：启动 frida-server
+-------------------------
+/data/local/tmp/frida-server-16.x.x-android-arm64 &
+
+# 验证是否运行
+ps -A | grep frida
+
+
+步骤 5：PC端测试连接
+---------------------
+# 在 PC 端命令行执行：
+frida-ps -U
+
+# 应该列出手机上的所有进程
+
+
+===============================================
+六、Frida 常用命令参考
+===============================================
+
+# 列出所有进程
+frida-ps -U
+
+# 附加到指定进程
+frida -U -n com.example.app
+
+# 启动新进程并注入
+frida -U -f com.example.app
+
+# 运行脚本
+frida -U -n com.example.app -l hook.js
+
+# 远程连接（使用 adb forward）
+adb forward tcp:27042 tcp:27042
+frida-ps -R
+
+
+===============================================
+七、相关错误及解决
+===============================================
+
+【错误 1】
+Failed to spawn: unable to find executable at '...'
+解决：使用 -f 参数时，确保包名正确，应用已安装
+
+【错误 2】
+Failed to attach: process not found
+解决：使用 frida-ps -U 确认进程名/ID 正确
+
+【错误 3】
+Failed to communicate with remote frida-server
+解决：检查 frida-server 是否运行，防火墙是否放行 27042 端口
+
+【错误 4】
+Unable to find a suitable Frida server
+解决：版本不匹配，重新下载对应版本的 frida-server
+
+
